@@ -11,6 +11,7 @@ from jax.experimental.pjit import pjit
 from jax.sharding import PartitionSpec as PS
 from flax.training.train_state import TrainState
 import torch
+from transformers import AutoTokenizer
 
 from EasyLM.data import DatasetFactory
 from EasyLM.checkpoint import StreamingCheckpointer
@@ -22,7 +23,7 @@ from EasyLM.jax_utils import (
     make_shard_and_gather_fns, with_sharding_constraint, average_metrics
 )
 from EasyLM.models.olmo.olmo_model import (
-    OLMoConfig, FlaxOLMoForCausalLMModule
+    OLMoConfig, FlaxOLMoForCausalLMModule, OlmoTokenizer
 )
 
 
@@ -41,7 +42,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     save_milestone_freq=0,
     eval_steps=0,
     num_epochs=0,
-    tokenizer=OLMoConfig.get_tokenizer_config(),
+    tokenizer='allenai/OLMo-7B',
     train_dataset=DatasetFactory.get_default_config(),
     eval_dataset=DatasetFactory.get_default_config(),
     optimizer=OptimizerFactory.get_default_config(),
@@ -65,7 +66,9 @@ def main(argv):
     )
     set_random_seed(FLAGS.seed)
 
-    tokenizer = OLMoConfig.get_tokenizer(FLAGS.tokenizer)
+    tokenizer = OlmoTokenizer.from_pretrained(FLAGS.tokenizer)
+    # for olmo, we need to set the eos token to bos token
+    tokenizer.bos_token = tokenizer.eos_token
     dataset = DatasetFactory.load_dataset(FLAGS.train_dataset, tokenizer)
     if FLAGS.load_dataset_state != '':
         dataset.load_state_dict(mlxu.load_pickle(FLAGS.load_dataset_state))

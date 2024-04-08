@@ -44,6 +44,7 @@ fastapi
 uvicorn
 gradio
 jax-smi
+ai2-olmo==0.2.5
 EndOfFile
 
 pip install --upgrade -r $HOME/tpu_requirements.txt
