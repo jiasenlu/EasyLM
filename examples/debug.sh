@@ -1,14 +1,14 @@
-python -m EasyLM.models.llama.llama_train \
+python -m EasyLM.models.olmo.olmo_train \
     --mesh_dim='1,-1,1' \
     --dtype='fp32' \
     --num_epochs=2 \
     --log_freq=50 \
     --save_model_freq=1000 \
     --save_milestone_freq=0 \
-    --load_llama_config='debug' \
-    --update_llama_config='' \
+    --load_olmo_config='debug' \
+    --update_olmo_config='' \
     --load_dataset_state='' \
-    --tokenizer.vocab_file='tokenizer.model' \
+    --tokenizer.vocab_file='EasyLM/models/olmo/tokenizer.json' \
     --optimizer.type='adamw' \
     --optimizer.adamw_optimizer.weight_decay=0.0 \
     --optimizer.adamw_optimizer.lr=2e-5 \
@@ -23,4 +23,3 @@ python -m EasyLM.models.llama.llama_train \
     --checkpointer.save_optimizer_state=False \
     --logger.online=False \
     --logger.output_dir="test_output" \
-    --update_llama_config="{'scan_attention': True, 'scan_mlp': True}"  # turn on flash attention :)
