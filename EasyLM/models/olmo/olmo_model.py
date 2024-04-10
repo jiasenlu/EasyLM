@@ -284,7 +284,7 @@ def apply_rotary_emb(
 
     reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
     reshape_xk = xk.astype(jnp.float32).reshape(*xk.shape[:-1], -1, 2)
-
+    
     xq_ = jax.lax.complex(reshape_xq[..., 0], reshape_xq[..., 1])
     xk_ = jax.lax.complex(reshape_xk[..., 0], reshape_xk[..., 1])
 
@@ -298,6 +298,59 @@ def apply_rotary_emb(
     xk_out = jnp.stack((jnp.real(xk_out), jnp.imag(xk_out)), axis=-1).reshape(*xk_out.shape[:-1], -1)
 
     return xq_out.astype(dtype), xk_out.astype(dtype)
+
+def jax_unstack(x, axis=0):
+  return [jax.lax.index_in_dim(x, i, axis, keepdims=False) for i in range(x.shape[axis])]
+
+class RotaryEmbedding(nn.Module):
+    """
+    [Rotary positional embeddings (RoPE)](https://arxiv.org/abs/2104.09864).
+    """
+    config: OLMoConfig
+    dtype: jnp.dtype=jnp.float32
+
+    def setup(self):
+        self.pos_sin, self.pos_cos = self.get_rotary_embedding(self.config.max_sequence_length)
+
+    def get_rotary_embedding(self, seq_len: int):
+        dim = self.config.hidden_size // self.config.num_attention_heads
+        inv_freq = 1.0 / (10000 ** (jnp.arange(0, dim, 2, dtype=jnp.float32) / dim))
+        seq = jnp.arange(seq_len, dtype=jnp.float32)
+        
+        freqs = jnp.einsum("i , j -> i j", seq, inv_freq)
+        positions = jnp.concatenate((freqs, freqs), axis=-1)
+        pos_sin, pos_cos = jnp.sin(positions)[None, :, None, :], jnp.cos(positions)[None, :, None, :]
+        return pos_sin, pos_cos
+
+    def rotate_half(self, x):
+        B, nh, T, hs = x.shape
+        x = jnp.reshape(x, (B, nh, T, 2, hs // 2))
+        x1, x2 = jax_unstack(x, axis=-2)
+        return jnp.concatenate((-x2, x1), axis=-1)
+
+    def apply_rotary_pos_emb(self, pos_sin, pos_cos, t):
+        return jnp.array((t * pos_cos) + (self.rotate_half(t) * pos_sin), t.dtype)
+
+    def __call__(self, q, k):
+        q_, k_ = q, k
+        query_len, key_len = q_.shape[1], k_.shape[1]  # could be different if layer_past not None
+        # pos_sin, pos_cos = self.get_rotary_embedding(key_len, q_.device)
+
+        pos_sin = self.pos_sin[:,:key_len]
+        pos_cos = self.pos_cos[:,:key_len]
+        
+        pos_sin = jnp.array(pos_sin, q_.dtype)
+        pos_cos = jnp.array(pos_cos, q_.dtype)
+
+        q_ = self.apply_rotary_pos_emb(
+            pos_sin[:, key_len - query_len : key_len, :, :],
+            pos_cos[:, key_len - query_len : key_len, :, :],
+            q_,
+        )
+        k_ = self.apply_rotary_pos_emb(pos_sin, pos_cos, k_)
+
+        return q_, k_
+
 
 
 class FlaxOLMoAttention(nn.Module):
@@ -353,11 +406,7 @@ class FlaxOLMoAttention(nn.Module):
 
         self.causal_mask = make_causal_mask(jnp.ones((1, config.max_sequence_length), dtype="bool"), dtype="bool")
 
-        self.freqs_cis = precompute_freqs_cis(
-            self.head_dim,
-            config.max_sequence_length * 2,
-            dtype=self.dtype,
-        )
+        self.rotary_emb = RotaryEmbedding(config)
 
     def _split_heads(self, hidden_states, num_heads):
         return hidden_states.reshape(hidden_states.shape[:2] + (num_heads, self.head_dim))
@@ -428,9 +477,10 @@ class FlaxOLMoAttention(nn.Module):
         xk = self._split_heads(xk, self.num_key_value_heads)
         xv = self._split_heads(xv, self.num_key_value_heads)
 
-        freqs_cis = jnp.take(self.freqs_cis, position_ids, axis=0)
+        # freqs_cis = jnp.take(self.freqs_cis, position_ids, axis=0)
 
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis, dtype=self.dtype)
+        # xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis, dtype=self.dtype)
+        xq, xk = self.rotary_emb(xq, xk)
 
         dropout_rng = None
         if not deterministic and self.config.attn_pdrop > 0.0:
@@ -547,6 +597,7 @@ class FlaxOLMoMLP(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.initializer_range),
             precision=self.precision,
         )
+        
         self.w3 = nn.Dense(
             config.intermediate_size,
             dtype=self.dtype,
@@ -558,7 +609,8 @@ class FlaxOLMoMLP(nn.Module):
         self.dropout = nn.Dropout(rate=self.config.resid_pdrop)
 
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
-        x = self.w2(nn.silu(self.w1(x)) * self.w3(x))
+        
+        x = self.w2(nn.silu(self.w3(x)) * self.w1(x))
         x = self.dropout(x, deterministic=deterministic)
         return x
 
@@ -597,15 +649,17 @@ class FlaxOLMoBlock(nn.Module):
             param_dtype=self.param_dtype,
             precision=self.precision,
         )
-        self.attention_norm = RMSNorm(
-            self.config.hidden_size,
-            eps=self.config.rms_norm_eps,
+        self.attention_norm = nn.LayerNorm(
+            epsilon=self.config.rms_norm_eps,
+            use_bias=False,
+            use_scale=False,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
         )
-        self.ffn_norm = RMSNorm(
-            self.config.hidden_size,
-            eps=self.config.rms_norm_eps,
+        self.ffn_norm = nn.LayerNorm(
+            epsilon=self.config.rms_norm_eps,
+            use_bias=False,
+            use_scale=False,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
         )
@@ -620,6 +674,7 @@ class FlaxOLMoBlock(nn.Module):
         output_attentions: bool = False,
         fcm_mask: Optional[jnp.ndarray] = None,
     ):
+        
         attn_outputs = self.attention(
             self.attention_norm(hidden_states),
             attention_mask,
@@ -896,7 +951,12 @@ class FlaxOLMoModule(nn.Module):
         )
         self.dropout = nn.Dropout(rate=self.config.embd_pdrop)
         self.h = FlaxOLMoBlockCollection(self.config, dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision)
-        self.ln_f = RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)
+        self.ln_f = nn.LayerNorm(
+            epsilon=self.config.rms_norm_eps, 
+            use_bias=False,
+            use_scale=False,
+            dtype=self.dtype, 
+            param_dtype=self.param_dtype)
 
     def __call__(
         self,
@@ -909,8 +969,14 @@ class FlaxOLMoModule(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ):
-        input_embeds = self.wte(input_ids.astype("i4"))
+        
+        input_ids = np.array([[26170, 14053,   310,   209]])
+        input_ids = input_ids.repeat(4, 0)
+        attention_mask = np.ones(input_ids.shape)
+        position_ids = np.arange(4)[None, :]
+        position_ids = position_ids.repeat(4, 0)
 
+        input_embeds = self.wte(input_ids.astype("i4"))
         hidden_states = self.dropout(input_embeds, deterministic=deterministic)
 
         outputs = self.h(
@@ -1146,6 +1212,7 @@ class FlaxOLMoForTokenRegressionModule(nn.Module):
                 jnp.clip(jnp.cumsum(attention_mask, axis=-1) - 1, a_min=0),
                 (batch_size, seq_length)
             )
+            
         outputs = self.transformer(
             input_ids,
             attention_mask,
@@ -1214,4 +1281,3 @@ if __name__ == '__main__':
     jax_logits = jax_model.apply(
         restored_params, inputs, deterministic=True,
     ).logits
-    import pdb; pdb.set_trace()

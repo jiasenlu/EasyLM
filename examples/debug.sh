@@ -13,13 +13,18 @@ python -m EasyLM.models.olmo.olmo_train \
     --optimizer.adamw_optimizer.lr=2e-5 \
     --optimizer.adamw_optimizer.end_lr=0 \
     --optimizer.adamw_optimizer.warmup_ratio=0.3 \
-    --optimizer.accumulate_gradient_steps=16 \
+    --optimizer.accumulate_gradient_steps=1 \
     --checkpointer.save_optimizer_state=False \
     --logger.online=False \
-    --train_dataset.type='json_torch' \
-    --train_dataset.text_processor.fields='[prompt],completion' \
-    --train_dataset.json_torch_dataset.path='alpaca.jsonl' \
-    --train_dataset.json_torch_dataset.seq_length=2048 \
-    --train_dataset.json_torch_dataset.batch_size=1 \
+    --train_dataset.type='huggingface' \
+    --train_dataset.huggingface_dataset.path='cnn_dailymail' \
+    --train_dataset.huggingface_dataset.name '3.0.0' \
+    --train_dataset.huggingface_dataset.split 'validation' \
+    --train_dataset.huggingface_dataset.batch_size 1 \
     --logger.output_dir="test_output" \
-    --load_checkpoint='params::gs://mm-olmo/OLMo-7B-eazylm-full' \
+    --load_checkpoint='params::OLMo-7B-eazylm' \
+    # --train_dataset.type='json_torch' \
+    # --train_dataset.text_processor.fields='[prompt],completion' \
+    # --train_dataset.json_torch_dataset.path='alpaca.jsonl' \
+    # --train_dataset.json_torch_dataset.seq_length=1024 \
+    # --train_dataset.json_torch_dataset.batch_size=1 \
