@@ -25,7 +25,7 @@ LLAMA_STANDARD_CONFIGS = {
         "intermediate_size": 11008,
         "n_layers": 2,
         "n_heads": 32,
-        "norm_eps": 1e-6,
+        "norm_eps": 1e-5,
     },
 }
 
@@ -77,13 +77,19 @@ def main(args):
                     },
                     "feed_forward": {
                         "w1": {
-                            "kernel": ckpt[f"blocks.{layer}.ff_proj.weight"]
+                            "kernel": ckpt[f"blocks.{layer}.ff_proj.weight"].chunk(2)[0]
                             .to(torch.float32)
                             .numpy()
                             .transpose()
                         },
                         "w2": {
                             "kernel": ckpt[f"blocks.{layer}.ff_out.weight"]
+                            .to(torch.float32)
+                            .numpy()
+                            .transpose()
+                        },
+                        "w3": {
+                            "kernel": ckpt[f"blocks.{layer}.ff_proj.weight"].chunk(2)[1]
                             .to(torch.float32)
                             .numpy()
                             .transpose()

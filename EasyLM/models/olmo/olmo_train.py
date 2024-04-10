@@ -79,6 +79,7 @@ def main(argv):
         wrapped_dataset = dataset
 
     real_batch_size = wrapped_dataset.config.batch_size
+    
     # for the scheduler, which only gets updated with 'real' grad steps
     simulated_batch_size = real_batch_size * FLAGS.optimizer.accumulate_gradient_steps
     steps_per_epoch = len(wrapped_dataset) // real_batch_size

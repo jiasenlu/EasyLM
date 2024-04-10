@@ -38,7 +38,7 @@ LLAMA_STANDARD_CONFIGS = {
         'num_attention_heads': 32,
         'max_sequence_length': 2048,
         'initializer_range': 0.02,
-        'rms_norm_eps': 1e-6,
+        'rms_norm_eps': 1e-5,
         'use_cache': True,
         'tie_word_embeddings': False,
     },
@@ -51,7 +51,7 @@ LLAMA_STANDARD_CONFIGS = {
         'num_key_value_heads': 2,
         'max_sequence_length': 2048,
         'initializer_range': 0.02,
-        'rms_norm_eps': 1e-6,
+        'rms_norm_eps': 1e-5,
         'use_cache': True,
         'tie_word_embeddings': False,
     },
@@ -196,10 +196,6 @@ class OLMoConfig(PretrainedConfig):
             ("feed_forward/w2/kernel", PS("mp", "fsdp")),
             ("feed_forward/w3/kernel", PS("fsdp", "mp")),
             # layer norms
-            ("attention_norm/kernel", PS(None)),
-            ("ffn_norm/kernel", PS(None)),
-            # output head
-            ("transformer/ln_f/kernel", PS(None)),
             ("lm_head/kernel", PS("fsdp", "mp")),
             ('.*', PS(None)),
         )
@@ -228,8 +224,7 @@ class OLMoConfig(PretrainedConfig):
         config = cls.get_tokenizer_config(config)
         assert config.vocab_file != '', 'vocab_file must be specified'
         
-        import pdb; pdb.set_trace()
-        tokenizer = OLMoTokenizer(
+        tokenizer = OlmoTokenizer(
             vocab_file=config.vocab_file,
             add_bos_token=config.add_bos_token,
             add_eos_token=config.add_eos_token,
@@ -264,22 +259,13 @@ class RMSNorm(nn.Module):
     dtype: jnp.dtype=jnp.float32
     param_dtype: jnp.dtype=jnp.float32
 
-    def setup(self) -> None:
-        self.weight = self.param(
-            'kernel',
-            nn.initializers.ones,
-            (self.dim,),
-            self.param_dtype,
-        )
-
     def _norm(self, x: jnp.ndarray) -> jnp.ndarray:
         return x * jax.lax.rsqrt(jnp.square(x).mean(-1, keepdims=True) + self.eps)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = x.astype(jnp.promote_types(self.dtype, jnp.float32))
         output = self._norm(x).astype(self.dtype)
-        weight = jnp.asarray(self.weight, self.dtype)
-        return output * weight
+        return output
 
 def precompute_freqs_cis(dim: int, end: int, theta: float=10000.0, dtype: jnp.dtype=jnp.float32) -> jnp.ndarray:
     freqs = 1.0 / (theta ** (np.arange(0, dim, 2)[: (dim // 2)].astype(dtype) / dim))
